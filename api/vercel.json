@@ -1,9 +1,9 @@
 {
-    functions {
-        apihello {
-            runtime python3.7,
-            memory 128,
-            entrypoint hello.handler
+    "functions": {
+        "api/hello": {
+            "runtime": "python3.7",
+            "memory": 128,
+            "entrypoint": "hello.handler"
         }
     }
 }
