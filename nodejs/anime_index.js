@@ -65,7 +65,7 @@ async function scrapeData(items){
   const head = cover+JSON.stringify(items)+writer;
   //console.log(head);
   //console.log(body);
-  const tphead = await markdownconver(head);
+  const tphead = await steamgpt_head(head);
   const mdbody = await splitSentences(body);
 
   if (tphead != null) {
@@ -116,43 +116,6 @@ async function pushmd(markdowndata,filename){
   });
 }
 
-async function contentconver(body){
-  const configuration = new Configuration({
-    apiKey: `${process.env.FREE_API_KEY}`,
-    basePath: `${process.env.FREE_API_BASE}`
-  });
-  // OpenAI instance creation
-  const openai = new OpenAIApi(configuration);
-  try {
-    const completion = await openai.createChatCompletion({
-      model: "gpt-3.5-turbo",
-      messages: [
-        {"role": "system", "content": `你现在是一个日本动漫资讯网站的编辑，你将会收到一些分割后的html格式的日文的文本数据,这些文本都和日本动漫相关,我需要你执行下面的步骤对文本进行处理: 1.把html转换成markdown格式,需要保留imgs图片地址。2.将文本翻译成中文,人名和作品名称不需要翻译。3.优化文本的排版,让文章看起来更美观。`},
-        {"role": "user", "content": `${body}`},
-      ],
-      temperature: 0,
-    });
-  
-    console.info(completion.data.usage);
-    const finish_reason = completion.data.choices[0].finish_reason
-    if(finish_reason == "stop"){
-      const msg = completion.data.choices[0].message?.content;
-      return msg;
-    }
-    else{
-      console.error("超出token了");
-      return " ";
-    }
-  } catch (error) {
-    if (error.response) {
-      console.error(error.message);
-      //await setTimeout(() => {}, 5000);  //如果失败了等5s后重试
-      //const result = await contentconver(body);
-      return ' ';
-    }
-  }
-}
-
 async function splitSentences(text){
   // 拆分为句子
   const sentences = splitIntoSentences.split(text) 
@@ -173,17 +136,17 @@ async function splitSentences(text){
   for (let [index, segment] of segments.entries()) {
     const text = segment.map((sentence) => sentence.raw).join(' ');
     //console.log(`第 ${index + 1} 段：${text}`);
-    let msg = await contentconver(text);
+    let msg = await steamgpt_body(text);
     article = article + "\n" + msg;
-    await setTimeout(() => {}, 3000);
+    await setTimeout(() => {}, 1000);
     //console.log(article);
   }
 
   return article
 }
 
-//用ai翻译并转换为markdown
-async function markdownconver(content) {
+
+async function steamgpt_head(content) {
   const configuration = new Configuration({
     apiKey: `${process.env.FREE_API_KEY}`,
     basePath: `${process.env.FREE_API_BASE}`
@@ -215,26 +178,110 @@ async function markdownconver(content) {
         {"role": "user", "content": `${content}`},
       ],
       temperature: 0,
+      stream: true,
+  }, { responseType: 'stream' });
+  const stream = completion.data;
+  return new Promise((resolve, reject) => {
+    const payloads = [];
+    let sentence = ''; // 用于存储组成的句子
+    stream.on('data', (chunk) => {
+      const data = chunk.toString();
+      payloads.push(data);
     });
 
-    console.info(completion.data.usage);
-    const finish_reason = completion.data.choices[0].finish_reason
-    if(finish_reason == "stop"){
-      const msg = completion.data.choices[0].message?.content;
-      return msg;
-    }
-    else{
-      console.error("超出token了");
-      return null;
-    }
-  } catch (error) {
-    if (error.response) {
-      console.error(error.message);
-      return null;
-    }
+    stream.on('end', () => {
+      const data = payloads.join(''); // 将数组中的数据拼接起来
+      const chunks = data.split('\n\n');
+      for (const chunk of chunks) {
+        if (chunk.includes('[DONE]')) return;
+        if (chunk.startsWith('data:')) {
+          const payload = JSON.parse(chunk.replace('data: ', ''));
+          try {
+            const chunk = payload.choices[0].delta?.content;
+            if (chunk) {
+              sentence += chunk; // 将单词添加到句子中
+            }
+
+          } catch (error) {
+            console.log(`Error with JSON.parse and ${chunk}.\n${error}`);
+            reject(error);
+          }
+        }
+      }
+    });
+    stream.on('error', (err) => {
+        console.log(err);
+    });
+    stream.on('close', () => {
+      resolve(sentence);
+  });
+  })
+  } catch (err) {
+    console.log(err);
   }
 }
 
+async function steamgpt_body(body){
+  const configuration = new Configuration({
+    apiKey: `${process.env.FREE_API_KEY}`,
+    basePath: `${process.env.FREE_API_BASE}`
+  });
+  // OpenAI instance creation
+  const openai = new OpenAIApi(configuration);
+  try {
+    const completion = await openai.createChatCompletion({
+      model: "gpt-3.5-turbo",
+      messages: [
+        {"role": "system", "content": `你现在是一个日本动漫资讯网站的编辑，你将会收到一些分割后的html格式的日文的文本数据,这些文本都和日本动漫相关,我需要你执行下面的步骤对文本进行处理: 1.把html转换成markdown格式,需要保留imgs图片地址。2.将文本翻译成中文,人名和作品名称不需要翻译。3.优化文本的排版,让文章看起来更美观。`},
+        {"role": "user", "content": `${body}`},
+      ],
+      temperature: 0,
+      stream: true,
+    }, { responseType: 'stream' });
+  
+    const stream = completion.data;
+    return new Promise((resolve, reject) => {
+      const payloads = [];
+      let sentence = ''; // 用于存储组成的句子
+      stream.on('data', (chunk) => {
+        const data = chunk.toString();
+        payloads.push(data);
+      });
+
+      stream.on('end', () => {
+        const data = payloads.join(''); // 将数组中的数据拼接起来
+        const chunks = data.split('\n\n');
+        for (const chunk of chunks) {
+          if (chunk.includes('[DONE]')) return;
+          if (chunk.startsWith('data:')) {
+            const payload = JSON.parse(chunk.replace('data: ', ''));
+            try {
+              const chunk = payload.choices[0].delta?.content;
+              if (chunk) {
+                sentence += chunk; // 将单词添加到句子中
+              }
+
+            } catch (error) {
+              console.log(`Error with JSON.parse and ${chunk}.\n${error}`);
+              reject(error);
+            }
+          }
+        }
+      });
+      stream.on('error', (err) => {
+          console.log(err);
+      });
+      stream.on('close', () => {
+        resolve(sentence);
+    });
+  })
+  } catch (error) {
+    if (error.response) {
+      console.error(error.message);
+      return '';
+    }
+  }
+}
 
 //定时任务
 const intervalId = setInterval(() => {
@@ -247,7 +294,7 @@ const intervalId = setInterval(() => {
         //ai转换为markdown格式
           if(ch != null || ch != undefined){
             const timestamp = moment().format('YYYYMMDDHHmm');
-            fs.writeFileSync(`md/${timestamp}.md`, ch); //生成md文件
+            //fs.writeFileSync(`md/${timestamp}.md`, ch); //生成md文件
             pushmd(ch,`${timestamp}.md`); //push到github
           }
       });

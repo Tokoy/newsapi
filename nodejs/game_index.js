@@ -11,6 +11,10 @@ const moment = require('moment');
 require('dotenv').config();
 const splitIntoSentences = require('sentence-splitter');
 const { fetchStreamedChat, fetchStreamedChatContent } = require('streamed-chatgpt-api');
+const { pipeline } = require('stream');
+const { promisify } = require('util');
+const pump = promisify(pipeline);
+
 
 fs.readFile('update_game.txt', 'utf8', (err, data) => {
   if (err) throw err;
@@ -66,7 +70,7 @@ async function scrapeData(items){
   const head = cover+JSON.stringify(items)+writer;
   //console.log(head);
   //console.log(body);
-  const tphead = await markdownconver(head);
+  const tphead = await streamgpt_head(head);
   const mdbody = await splitSentences(body);
 
   if (tphead != null) {
@@ -117,7 +121,7 @@ async function pushmd(markdowndata,filename){
   });
 }
 
-async function contentconver(body){
+async function gpt_body(content){
   const configuration = new Configuration({
     apiKey: `${process.env.FREE_API_KEY}`,
     basePath: `${process.env.FREE_API_BASE}`
@@ -129,7 +133,7 @@ async function contentconver(body){
       model: "gpt-3.5-turbo",
       messages: [
         {"role": "system", "content": `你现在是一名游戏文章编辑，你将会收到一些分割后的html格式的日文文本数据,这些文本都和游戏相关,我需要你执行下面的步骤对文本进行处理: 1.把html转换成markdown格式,需要保留imgs图片地址,如果图片地址没有https开头则加上https://www.inside-games.jp。2.将文本翻译成中文,人名和作品名称不需要翻译。3.优化文本的排版,让文章看起来更美观。`},
-        {"role": "user", "content": `${body}`},
+        {"role": "user", "content": `${content}`},
       ],
       temperature: 0,
     });
@@ -152,38 +156,8 @@ async function contentconver(body){
   }
 }
 
-//分割文本并markdownconver返回结果
-async function splitSentences(text){
-  // 拆分为句子
-  const sentences = splitIntoSentences.split(text) 
-
-  const segmentSize = 10; // 每段包含的句子数量
-  let segments = [];
-  let currentSegment = [];
-  for (let i = 0, len = sentences.length; i < len; i++) {
-    currentSegment.push(sentences[i]);
-    if (currentSegment.length === segmentSize) {
-      segments.push(currentSegment);
-      currentSegment = [];
-    }
-  }
-
-  let article = "";
-  // 输出拆分结果
-  for (let [index, segment] of segments.entries()) {
-    const text = segment.map((sentence) => sentence.raw).join(' ');
-    //onsole.log(`第 ${index + 1} 段：${text}`);
-    let msg = await contentconver(text);
-    article = article + "\n" + msg;
-    await setTimeout(() => {}, 1000);
-    //console.log(article);
-  }
-
-  return article
-}
-
 //用ai翻译并转换为markdown
-async function markdownconver(content) {
+async function gpt_head(content) {
   const configuration = new Configuration({
     apiKey: `${process.env.FREE_API_KEY}`,
     basePath: `${process.env.FREE_API_BASE}`
@@ -235,43 +209,173 @@ async function markdownconver(content) {
   }
 }
 
-
-async function streamgpt(body){
-  const http = require('http');
-  const apiKey = process.env.FREE_API_KEY;
-  const apiUrl = process.env.FREE_API_BASE
-  const messages = [
-    {"role": "system", "content": `你现在是一名游戏文章编辑，你将会收到一些分割后的html格式的日文文本数据,这些文本都和游戏相关,我需要你执行下面的步骤对文本进行处理: 1.把html转换成markdown格式,需要保留imgs图片地址,如果图片地址没有https开头则加上https://www.inside-games.jp。2.将文本翻译成中文,人名和作品名称不需要翻译。3.优化文本的排版,让文章看起来更美观。`},
-    {"role": "user", "content": `${body}`},
-  ];
-  const options = {
-    hostname: 'localhost',
-    port: 3006,
-    path: '/',
-    method: 'GET',
-  };
-  const req = http.request(options, res => {
-    fetchStreamedChatContent({
-      apiKey:apiKey,
-      apiUrl:apiUrl,
-      messageInput:messages,
-      maxTokens: 4000,
-      temperature: 0.1,
-      }, (content) => {
-          res.write(content);
-          completeResponse += content;
-      }, () => {
-          res.end();
-          console.log(completeResponse);
-      },
-      () => {
-          res.write("I'm sorry, there was an error processing your request.");
-          res.end();
-      });
+//流响应
+async function streamgpt_body(content){
+  const configuration = new Configuration({
+    apiKey: `${process.env.FREE_API_KEY}`,
+    basePath: `${process.env.FREE_API_BASE}`
   });
+  // OpenAI instance creation
+  const openai = new OpenAIApi(configuration);
+  try {
+    const completion = await openai.createChatCompletion({
+      model: "gpt-3.5-turbo",
+      messages: [
+        {"role": "system", "content": `你现在是一名游戏文章编辑，你将会收到一些分割后的html格式的日文文本数据,这些文本都和游戏相关,我需要你执行下面的步骤对文本进行处理: 1.把html转换成markdown格式,需要保留imgs图片地址,如果图片地址没有https开头则加上https://www.inside-games.jp。2.将文本翻译成中文,人名和作品名称不需要翻译。3.优化文本的排版,让文章看起来更美观。`},
+        {"role": "user", "content": `${content}`},
+      ],
+      temperature: 0,
+      stream: true,
+    }, { responseType: 'stream' });
+  
+    const stream = completion.data;
+    return new Promise((resolve, reject) => {
+      const payloads = [];
+      let sentence = ''; // 用于存储组成的句子
+      stream.on('data', (chunk) => {
+        const data = chunk.toString();
+        payloads.push(data);
+      });
 
+      stream.on('end', () => {
+        const data = payloads.join(''); // 将数组中的数据拼接起来
+        const chunks = data.split('\n\n');
+        for (const chunk of chunks) {
+          if (chunk.includes('[DONE]')) return;
+          if (chunk.startsWith('data:')) {
+            const payload = JSON.parse(chunk.replace('data: ', ''));
+            try {
+              const chunk = payload.choices[0].delta?.content;
+              if (chunk) {
+                sentence += chunk; // 将单词添加到句子中
+              }
 
+            } catch (error) {
+              console.log(`Error with JSON.parse and ${chunk}.\n${error}`);
+              reject(error);
+            }
+          }
+        }
+      });
+      stream.on('error', (err) => {
+          console.log(err);
+      });
+      stream.on('close', () => {
+        resolve(sentence);
+    });
+  })
+  } catch (error) {
+    if (error.response) {
+      console.error(error.message);
+      return '';
+    }
+  }
 }
+
+//分割文本并markdownconver返回结果
+async function splitSentences(text){
+  // 拆分为句子
+  const sentences = splitIntoSentences.split(text) 
+
+  const segmentSize = 10; // 每段包含的句子数量
+  let segments = [];
+  let currentSegment = [];
+  for (let i = 0, len = sentences.length; i < len; i++) {
+    currentSegment.push(sentences[i]);
+    if (currentSegment.length === segmentSize) {
+      segments.push(currentSegment);
+      currentSegment = [];
+    }
+  }
+
+  let article = "";
+  // 输出拆分结果
+  for (let [index, segment] of segments.entries()) {
+    const text = segment.map((sentence) => sentence.raw).join(' ');
+    //onsole.log(`第 ${index + 1} 段：${text}`);
+    let msg = await streamgpt_body(text);
+    article = article + "\n" + msg;
+    await setTimeout(() => {}, 1000);
+    //console.log(article);
+  }
+
+  return article
+}
+
+async function streamgpt_head(content){
+    const template = `---
+    layout: '../../layouts/MarkdownPost.astro'
+    title: "替换为中文标题"  
+    pubDate: 日期为YYYY-MM-DDThh:mm:ssZ
+    description: "替换为中文描述"
+    author: "替换为作者名称"
+    cover:
+      url: '替换为https:/www.inside-games.jp/imgs/ogp_f/的图片'
+      square: '替换为https:/www.inside-games.jp/imgs/ogp_f/的图片'
+      alt: "cover"
+    tags: ["news","游戏","替换为文章标签"]
+    theme: 'light'
+    featured: false
+    ---
+    ![cover](替换为https:/www.inside-games.jp/imgs/ogp_f/的图片)
+    `;
+    const configuration = new Configuration({
+      apiKey: `${process.env.FREE_API_KEY}`,
+      basePath: `${process.env.FREE_API_BASE}`
+    });
+    // OpenAI instance creation
+    const openai = new OpenAIApi(configuration);
+    try {
+      const completion = await openai.createChatCompletion({
+        model: 'gpt-3.5-turbo',
+        messages: [
+          {"role": "system", "content": `转换为中文，保持模板格式: ${template}`},
+          {"role": "user", "content": `${content}`},
+        ],
+        stream: true,
+    }, { responseType: 'stream' });
+    const stream = completion.data;
+    return new Promise((resolve, reject) => {
+      const payloads = [];
+      let sentence = ''; // 用于存储组成的句子
+      stream.on('data', (chunk) => {
+        const data = chunk.toString();
+        payloads.push(data);
+      });
+
+      stream.on('end', () => {
+        const data = payloads.join(''); // 将数组中的数据拼接起来
+        const chunks = data.split('\n\n');
+        for (const chunk of chunks) {
+          if (chunk.includes('[DONE]')) return;
+          if (chunk.startsWith('data:')) {
+            const payload = JSON.parse(chunk.replace('data: ', ''));
+            try {
+              const chunk = payload.choices[0].delta?.content;
+              if (chunk) {
+                sentence += chunk; // 将单词添加到句子中
+              }
+
+            } catch (error) {
+              console.log(`Error with JSON.parse and ${chunk}.\n${error}`);
+              reject(error);
+            }
+          }
+        }
+      });
+      stream.on('error', (err) => {
+          console.log(err);
+      });
+      stream.on('close', () => {
+        resolve(sentence);
+    });
+
+  })
+  } catch (err) {
+    console.log(err);
+  }
+}
+
 
 //定时任务
 const intervalId = setInterval(() => {
@@ -283,8 +387,9 @@ const intervalId = setInterval(() => {
       scrapeData(url).then(ch =>{
         //ai转换为markdown格式
           if(ch != null || ch != undefined){
+            console.log("开始写入");
             const timestamp = moment().format('YYYYMMDDHHmm');
-            fs.writeFileSync(`md/${timestamp}.md`, ch); //生成md文件
+            //fs.writeFileSync(`md/${timestamp}.md`, ch); //生成md文件
             pushmd(ch,`${timestamp}.md`); //push到github
           }
       });
