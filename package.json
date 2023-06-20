@@ -1,0 +1,5 @@
+{
+    "scripts": {
+      "vercel-build": "node ./anime_index.js"
+    }
+  }

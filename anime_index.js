@@ -4,18 +4,13 @@ const cheerio = require('cheerio');
 const { Configuration, OpenAIApi } = require("openai");
 const bodyParser = require('body-parser');
 const { XMLParser} = require("fast-xml-parser");
-const fs = require('fs');
 const app = express();
 const port = 3005;
 const moment = require('moment');
 require('dotenv').config();
 const splitIntoSentences = require('sentence-splitter');
 
-fs.readFile('update.txt', 'utf8', (err, data) => {
-  if (err) throw err;
-  global.updated = data;
-  console.log(global.updated);
-}); ;
+global.updated = "updated";
 
 app.get('/', (req, res) => {
   const content = req.query.content;
@@ -37,10 +32,6 @@ async function getRssUrl() {
     const items = jsonData.rss.channel.item[0]; //获取第一个items
     const updated = items.pubDate;
     if (updated != global.updated) {
-      fs.writeFile('update.txt', updated, err => {
-        if (err) throw err;
-        console.log('news update');
-      });
       global.updated = updated;
       return items;
     }
@@ -294,7 +285,6 @@ const intervalId = setInterval(() => {
         //ai转换为markdown格式
           if(ch != null || ch != undefined){
             const timestamp = moment().format('YYYYMMDDHHmm');
-            //fs.writeFileSync(`md/${timestamp}.md`, ch); //生成md文件
             pushmd(ch,`${timestamp}.md`); //push到github
           }
       });
